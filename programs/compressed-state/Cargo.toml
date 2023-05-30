@@ -1,0 +1,21 @@
+[package]
+name = "compressed-state"
+version = "0.1.0"
+description = "Created with Anchor"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "compressed_state"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = { git = "https://github.com/coral-xyz/anchor", branch = "master", features=["event-cpi"]}
+# spl-account-compression = { version ="0.1.10", features = ["cpi"] }
+spl-account-compression = { path = "/Users/noahgundotra/Documents/core/solana-program-library/account-compression/programs/account-compression", features = ["cpi"] }
