@@ -40,6 +40,9 @@ describe("compressed-state", () => {
     merkleTreeConfig
   );
 
+  let randomOwnerKp = Keypair.generate();
+  let randomOwner = randomOwnerKp.publicKey;
+
   it("Initialize tree", async () => {
     // Add your test here.
     const tx = await program.methods
@@ -86,18 +89,9 @@ describe("compressed-state", () => {
     let index = 0;
     let proof = compressedIndexer.getProof(index);
 
-    let cmt = await ConcurrentMerkleTreeAccount.fromAccountAddress(
-      program.provider.connection,
-      merkleTree,
-      "confirmed"
-    );
-    let proofVerified = MerkleTree.verify(cmt.getCurrentRoot(), proof);
-    if (!proofVerified) {
-      console.log("Verification result:", proofVerified);
-      console.log("Root:", cmt.getCurrentRoot());
-      console.log("Root:", proof.root);
-      throw new Error("Proof invalid");
-    }
+    // TODO: tell the compressed indexer to do this
+    await compressedIndexer.verify(proof, program);
+
     let oldAsset = await compressedIndexer.getStateByIndex(0, program);
     let newAssetId = compressedIndexer.getAssetId(index);
     console.log(
@@ -108,7 +102,7 @@ describe("compressed-state", () => {
     const tx = await program.methods
       .replace(
         {
-          owner: Keypair.generate().publicKey,
+          owner: randomOwner,
           assetId: newAssetId,
         },
         oldAsset,
@@ -132,5 +126,51 @@ describe("compressed-state", () => {
       )
       .rpc({ skipPreflight: true, commitment: "confirmed" });
     console.log("Your transaction signature", tx);
+
+    compressedIndexer.handleTransaction(
+      await program.provider.connection.getTransaction(tx, {
+        commitment: "confirmed",
+      }),
+      program
+    );
+  });
+  it("Delete asset", async () => {
+    let index = 0;
+    let asset = await compressedIndexer.getStateByIndex(index, program);
+    console.log(
+      "DELETING ASSET:",
+      asset.assetId.toBase58(),
+      asset.owner.toBase58()
+    );
+    let proof = compressedIndexer.getProof(index);
+    await compressedIndexer.verify(proof, program);
+
+    const tx = await program.methods
+      .delete(asset, new anchor.web3.PublicKey(proof.root), proof.leafIndex)
+      .accounts({
+        owner: randomOwner,
+        tree: merkleTree,
+        splAc: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+        noop: SPL_NOOP_PROGRAM_ID,
+      })
+      .remainingAccounts(
+        proof.proof.map((p) => {
+          return {
+            isSigner: false,
+            isWritable: false,
+            pubkey: new PublicKey(p),
+          };
+        })
+      )
+      .signers([randomOwnerKp])
+      .rpc({ skipPreflight: true, commitment: "confirmed" });
+    console.log("Your transaction signature", tx);
+
+    compressedIndexer.handleTransaction(
+      await program.provider.connection.getTransaction(tx, {
+        commitment: "confirmed",
+      }),
+      program
+    );
   });
 });

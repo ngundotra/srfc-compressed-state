@@ -5,6 +5,9 @@ import {
   ChangeLogEventV1,
   SPL_NOOP_ADDRESS,
   deserializeChangeLogEventV1,
+  ConcurrentMerkleTreeAccount,
+  MerkleTreeProof,
+  emptyNode,
 } from "@solana/spl-account-compression";
 import { keccak_256 } from "js-sha3";
 import { AssetGroup, getAssetData } from "./getAssetData";
@@ -146,6 +149,7 @@ function parseCpiEventsWithCompression(
         changeLogs: [],
       };
     }
+
     if (ix.programId.toBase58() === SPL_NOOP_ADDRESS) {
       let changeLog = deserializeChangeLogEventV1(ix.data);
       if (currentEvent) {
@@ -207,6 +211,14 @@ export class CompressedStateIndexer {
         pubkeys: assetGroup.pubkeys,
         data: newData,
       });
+      assetGroup = this.compressedMap.get(assetId.toBase58())!;
+
+      // Evict the cache, force chain reload
+      this.compressedState.delete(assetId.toBase58());
+      this.tree.updateLeaf(
+        changeLog.index,
+        this.hashAssetGroupData(assetGroup)
+      );
     } else if (event.name === "CrudDelete") {
       let assetId = event.data.assetId as anchor.web3.PublicKey;
 
@@ -218,16 +230,21 @@ export class CompressedStateIndexer {
         pubkeys: [],
         data: Buffer.from([]),
       });
-      this.compressedState.delete(assetId.toBase58());
+      this.compressedState.set(assetId.toBase58(), {});
+      this.tree.updateLeaf(changeLog.index, emptyNode(0));
     } else {
       throw new Error("Unrecognized event name: " + event.name);
     }
   }
 
+  hashAssetGroupData(assetGroup: AssetGroup) {
+    return Buffer.from(keccak_256.digest(assetGroup.data.slice(8)));
+  }
+
   createNewState(index: number, assetGroup: AssetGroup) {
     let assetId = this.getAssetId(index);
 
-    let leaf = Buffer.from(keccak_256.digest(assetGroup.data.slice(8)));
+    let leaf = this.hashAssetGroupData(assetGroup);
     this.tree.updateLeaf(index, leaf);
     this.compressedMap.set(assetId.toBase58(), assetGroup);
     this.numItems += 1;
@@ -287,5 +304,20 @@ export class CompressedStateIndexer {
 
   getProof(index: number) {
     return this.tree.getProof(index);
+  }
+
+  async verify(proof: MerkleTreeProof, program: anchor.Program) {
+    let cmt = await ConcurrentMerkleTreeAccount.fromAccountAddress(
+      program.provider.connection,
+      this.treeId,
+      "confirmed"
+    );
+    let proofVerified = MerkleTree.verify(cmt.getCurrentRoot(), proof, false);
+    if (!proofVerified) {
+      console.log("Verification result:", proofVerified);
+      console.log("Root:", cmt.getCurrentRoot());
+      console.log("Root:", proof.root);
+      throw new Error("Proof invalid");
+    }
   }
 }
