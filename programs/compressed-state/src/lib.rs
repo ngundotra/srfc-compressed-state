@@ -1,75 +1,77 @@
 use anchor_lang::prelude::*;
 use anchor_lang::Discriminator;
+use serde::{self, Serialize};
+use serde_json;
 use spl_account_compression;
+
+mod bs58_pubkey;
+mod compression;
+
+use bs58_pubkey::serde_pubkey;
+use compression::*;
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
-// pub struct ConcurrentMerkleTree<const MAX_DEPTH: usize, const MAX_BUFFER_SIZE: usize> {
-//     pub sequence_number: u64,
-//     /// Index of most recent root & changes
-//     pub active_index: u64,
-//     /// Number of active changes we are tracking
-//     pub buffer_size: u64,
-//     /// Proof for respective root
-//     pub change_logs: [ChangeLog<MAX_DEPTH>; MAX_BUFFER_SIZE],
-//     pub rightmost_proof: Path<MAX_DEPTH>,
-// }
-
-// pub struct ChangeLog<const MAX_DEPTH: usize> {
-//     /// Historical root value before Path was applied
-//     pub root: Node,
-//     /// Nodes of off-chain merkle tree
-//     pub path: [Node; MAX_DEPTH],
-//     /// Bitmap of node parity (used when hashing)
-//     pub index: u32,
-//     pub _padding: u32,
-// }
-
-// #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-// #[repr(C)]
-// pub struct Path<const MAX_DEPTH: usize> {
-//     pub proof: [Node; MAX_DEPTH],
-//     pub leaf: Node,
-//     pub index: u32,
-//     pub _padding: u32,
-// }
-
-fn get_rightmost_proof_index(
-    tree_bytes: &[u8],
-    max_depth: u32,
-    max_buffer_size: u32,
-) -> Result<u32> {
-    let changelog_size = 32 + 32 * max_depth + 4 + 4;
-    let path_start = 8 + 8 + 8 + changelog_size * max_buffer_size;
-
-    let index_start = path_start + 32 * max_depth + 32;
-    let (_, _index_bytes) = tree_bytes.split_at(index_start as usize);
-    let (index_bytes, _) = _index_bytes.split_at(4);
-
-    let index = u32::try_from_slice(index_bytes)?;
-    Ok(index)
+fn create_state(ctx: Context<CreateNewState>, leaf: [u8; 32]) -> Result<()> {
+    let seeds = &[
+        b"__event_authority".as_ref(),
+        &[*ctx.bumps.get("event_authority").unwrap()],
+    ];
+    let authority_pda_signer = &[&seeds[..]];
+    let cpi_ctx = CpiContext::new_with_signer(
+        ctx.accounts.spl_ac.to_account_info(),
+        spl_account_compression::cpi::accounts::Modify {
+            merkle_tree: ctx.accounts.tree.to_account_info(),
+            authority: ctx.accounts.event_authority.to_account_info(),
+            noop: ctx.accounts.noop.to_account_info(),
+        },
+        authority_pda_signer,
+    );
+    spl_account_compression::cpi::append(cpi_ctx, leaf)?;
+    Ok(())
 }
 
-fn get_rightmost_proof_index_from_account<'info>(account: &AccountInfo<'info>) -> Result<u32> {
-    let merkle_tree_bytes = account.try_borrow_data()?;
-    let (header_bytes, rest) = merkle_tree_bytes
-        .split_at(spl_account_compression::state::CONCURRENT_MERKLE_TREE_HEADER_SIZE_V1);
-    let header =
-        spl_account_compression::state::ConcurrentMerkleTreeHeader::try_from_slice(header_bytes)?;
-    let merkle_tree_size = spl_account_compression::state::merkle_tree_get_size(&header)?;
-    let (tree_bytes, _canopy_bytes) = rest.split_at(merkle_tree_size);
-    let rmp_index = get_rightmost_proof_index(
-        tree_bytes,
-        header.get_max_depth(),
-        header.get_max_buffer_size(),
+fn replace_state(
+    ctx: Context<ChangeState>,
+    new_leaf: [u8; 32],
+    previous_leaf: [u8; 32],
+    root: &Pubkey,
+    leaf_index: u32,
+) -> Result<()> {
+    // invoke compression
+    let seeds = &[
+        b"__event_authority".as_ref(),
+        &[*ctx.bumps.get("event_authority").unwrap()],
+    ];
+    let authority_pda_signer = &[&seeds[..]];
+    let cpi_ctx = CpiContext::new_with_signer(
+        ctx.accounts.spl_ac.to_account_info(),
+        spl_account_compression::cpi::accounts::Modify {
+            authority: ctx.accounts.event_authority.to_account_info(),
+            merkle_tree: ctx.accounts.tree.to_account_info(),
+            noop: ctx.accounts.noop.to_account_info(),
+        },
+        authority_pda_signer,
+    );
+    // let previous_leaf: [u8; 32] =
+    //     anchor_lang::solana_program::keccak::hashv(&[&previous_bytes]).to_bytes();
+    // let new_leaf: [u8; 32] = anchor_lang::solana_program::keccak::hashv(&[&new_bytes]).to_bytes();
+    spl_account_compression::cpi::replace_leaf(
+        cpi_ctx,
+        root.to_bytes(),
+        previous_leaf,
+        new_leaf,
+        leaf_index,
     )?;
-    Ok(rmp_index)
+    Ok(())
+}
+
+pub fn hash_state(state: &State) -> Result<[u8; 32]> {
+    Ok(anchor_lang::solana_program::keccak::hashv(&[&state.try_to_vec()?]).to_bytes())
 }
 
 #[program]
 pub mod compressed_state {
-    use spl_account_compression::merkle_tree_apply_fn;
-
     use super::*;
 
     pub fn init_new_tree(
@@ -77,7 +79,7 @@ pub mod compressed_state {
         max_depth: u32,
         max_buffer_size: u32,
     ) -> Result<()> {
-        // invoke spl ac
+        // invoke compression
         let seeds = &[
             b"__event_authority".as_ref(),
             &[*ctx.bumps.get("event_authority").unwrap()],
@@ -98,11 +100,6 @@ pub mod compressed_state {
     }
 
     pub fn create_new_state(ctx: Context<CreateNewState>) -> Result<()> {
-        let new_state = State {
-            asset_id: ctx.accounts.tree.key.clone(),
-            owner: ctx.accounts.owner.key.clone(),
-        };
-
         let rmp_index = get_rightmost_proof_index_from_account(&ctx.accounts.tree)?;
         msg!("Rmp: {}", rmp_index);
 
@@ -113,36 +110,42 @@ pub mod compressed_state {
         )
         .0;
 
-        let mut bytes = State::DISCRIMINATOR.try_to_vec()?;
-        let state_bytes = new_state.try_to_vec().unwrap();
-        bytes.extend_from_slice(&state_bytes.clone());
+        let new_state = State {
+            asset_id: asset_id,
+            owner: ctx.accounts.owner.key.clone(),
+        };
+
         emit_cpi!({
             CrudCreate {
-                owner: ctx.accounts.owner.key.clone(),
+                authority: ctx.accounts.owner.key.clone(),
                 asset_id: asset_id,
                 pubkeys: vec![],
-                data: bytes.clone(),
+                data: emittable_bytes(&new_state)?,
             }
         });
 
         // invoke compression
-        let seeds = &[
-            b"__event_authority".as_ref(),
-            &[*ctx.bumps.get("event_authority").unwrap()],
-        ];
-        let authority_pda_signer = &[&seeds[..]];
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.spl_ac.to_account_info(),
-            spl_account_compression::cpi::accounts::Modify {
-                merkle_tree: ctx.accounts.tree.to_account_info(),
-                authority: ctx.accounts.event_authority.to_account_info(),
-                noop: ctx.accounts.noop.to_account_info(),
-            },
-            authority_pda_signer,
-        );
-        let leaf: [u8; 32] = anchor_lang::solana_program::keccak::hashv(&[&state_bytes]).to_bytes();
-        msg!("Leaf: {:?}", leaf);
-        spl_account_compression::cpi::append(cpi_ctx, leaf)?;
+        create_state(ctx, hash_state(&new_state)?)?;
+        Ok(())
+    }
+
+    pub fn delete(
+        ctx: Context<ChangeState>,
+        state: State,
+        root: Pubkey,
+        leaf_index: u32,
+    ) -> Result<()> {
+        if *ctx.accounts.owner.key != state.owner {
+            return Err(ErrorCode::InvalidOwner.into());
+        }
+
+        emit_cpi!({
+            CrudDelete {
+                asset_id: state.asset_id,
+            }
+        });
+
+        replace_state(ctx, [0u8; 32], hash_state(&state)?, &root, leaf_index)?;
         Ok(())
     }
 
@@ -156,54 +159,58 @@ pub mod compressed_state {
         if *ctx.accounts.owner.key != old_state.owner {
             return Err(ErrorCode::InvalidOwner.into());
         }
+        if new_state.asset_id != old_state.asset_id {
+            return Err(ErrorCode::InvalidAssetId.into());
+        }
 
         let rmp_index = get_rightmost_proof_index_from_account(&ctx.accounts.tree)?;
         msg!("Rmp: {}", rmp_index);
 
-        let previous_bytes = old_state.try_to_vec().unwrap();
-        let new_bytes = new_state.try_to_vec().unwrap();
-
         emit_cpi!({
             CrudUpdateBytes {
                 asset_id: old_state.asset_id,
-                data: new_bytes.clone(),
+                data: emittable_bytes(&new_state)?,
             }
         });
 
         // invoke compression
-        let seeds = &[
-            b"__event_authority".as_ref(),
-            &[*ctx.bumps.get("event_authority").unwrap()],
-        ];
-        let authority_pda_signer = &[&seeds[..]];
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.spl_ac.to_account_info(),
-            spl_account_compression::cpi::accounts::Modify {
-                authority: ctx.accounts.event_authority.to_account_info(),
-                merkle_tree: ctx.accounts.tree.to_account_info(),
-                noop: ctx.accounts.noop.to_account_info(),
-            },
-            authority_pda_signer,
-        );
-        let previous_leaf: [u8; 32] =
-            anchor_lang::solana_program::keccak::hashv(&[&previous_bytes]).to_bytes();
-        let new_leaf: [u8; 32] =
-            anchor_lang::solana_program::keccak::hashv(&[&new_bytes]).to_bytes();
-        spl_account_compression::cpi::replace_leaf(
-            cpi_ctx,
-            root.to_bytes(),
-            previous_leaf,
-            new_leaf,
+        replace_state(
+            ctx,
+            hash_state(&new_state)?,
+            hash_state(&old_state)?,
+            &root,
             leaf_index,
         )?;
         Ok(())
     }
+
+    pub fn get_asset_data(ctx: Context<GetAssetData>, data: Vec<u8>) -> Result<()> {
+        let data_disc = &data[..8];
+        let json_data = if *data_disc == State::DISCRIMINATOR {
+            let state = State::try_from_slice(&data[8..])?;
+            serde_json::to_string(&state).unwrap()
+        } else {
+            "".to_string()
+        };
+        anchor_lang::solana_program::program::set_return_data(&json_data.as_bytes());
+        Ok(())
+    }
+}
+
+/// Appends the State discriminator to support adding more state types in the future
+pub fn emittable_bytes(state: &State) -> Result<Vec<u8>> {
+    let mut bytes = State::DISCRIMINATOR.try_to_vec().unwrap();
+    let state_bytes = state.try_to_vec().unwrap();
+    bytes.extend_from_slice(&state_bytes.clone());
+    Ok(bytes)
 }
 
 #[error_code]
 pub enum ErrorCode {
     #[msg("Invalid owner")]
     InvalidOwner,
+    #[msg("Invalid asset id")]
+    InvalidAssetId,
 }
 
 #[event_cpi]
@@ -216,6 +223,14 @@ pub struct InitTree<'info> {
     spl_ac: AccountInfo<'info>,
     /// CHECK:
     noop: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct GetAssetData<'info> {
+    /// CHECK:
+    authority: AccountInfo<'info>,
+    /// CHECK:
+    asset_id: AccountInfo<'info>,
 }
 
 #[event_cpi]
@@ -244,15 +259,18 @@ pub struct ChangeState<'info> {
     noop: AccountInfo<'info>,
 }
 
+#[derive(Debug, Serialize)]
 #[account]
 pub struct State {
+    #[serde(with = "serde_pubkey")]
     asset_id: Pubkey,
+    #[serde(with = "serde_pubkey")]
     owner: Pubkey,
 }
 
 #[event]
 pub struct CrudCreate {
-    pub owner: Pubkey,
+    pub authority: Pubkey,
     pub asset_id: Pubkey,
     pub pubkeys: Vec<Pubkey>,
     pub data: Vec<u8>,
@@ -262,4 +280,9 @@ pub struct CrudCreate {
 pub struct CrudUpdateBytes {
     pub asset_id: Pubkey,
     pub data: Vec<u8>,
+}
+
+#[event]
+pub struct CrudDelete {
+    pub asset_id: Pubkey,
 }
