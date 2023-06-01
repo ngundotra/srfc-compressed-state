@@ -204,34 +204,10 @@ export class CompressedStateIndexer {
       let assetId = event.data.assetId as anchor.web3.PublicKey;
       let newData = event.data.data as Buffer;
 
-      let assetGroup = this.compressedMap.get(assetId.toBase58())!;
-      this.compressedMap.set(assetId.toBase58(), {
-        assetId: assetGroup.assetId,
-        authority: assetGroup.authority,
-        pubkeys: assetGroup.pubkeys,
-        data: newData,
-      });
-      assetGroup = this.compressedMap.get(assetId.toBase58())!;
-
-      // Evict the cache, force chain reload
-      this.compressedState.delete(assetId.toBase58());
-      this.tree.updateLeaf(
-        changeLog.index,
-        this.hashAssetGroupData(assetGroup)
-      );
+      this.updateState(assetId, newData, changeLog);
     } else if (event.name === "CrudDelete") {
       let assetId = event.data.assetId as anchor.web3.PublicKey;
-
-      // Not sure if we want to delete this (ie we want a record of things we indexed & then deleted)
-      // so that we never reindex this
-      this.compressedMap.set(assetId.toBase58(), {
-        assetId: anchor.web3.PublicKey.default,
-        authority: anchor.web3.PublicKey.default,
-        pubkeys: [],
-        data: Buffer.from([]),
-      });
-      this.compressedState.set(assetId.toBase58(), {});
-      this.tree.updateLeaf(changeLog.index, emptyNode(0));
+      this.deleteState(assetId, changeLog);
     } else {
       throw new Error("Unrecognized event name: " + event.name);
     }
@@ -248,6 +224,38 @@ export class CompressedStateIndexer {
     this.tree.updateLeaf(index, leaf);
     this.compressedMap.set(assetId.toBase58(), assetGroup);
     this.numItems += 1;
+  }
+
+  updateState(
+    assetId: anchor.web3.PublicKey,
+    newData: Buffer,
+    changeLog: ChangeLogEventV1
+  ) {
+    let assetGroup = this.compressedMap.get(assetId.toBase58())!;
+    this.compressedMap.set(assetId.toBase58(), {
+      assetId: assetGroup.assetId,
+      authority: assetGroup.authority,
+      pubkeys: assetGroup.pubkeys,
+      data: newData,
+    });
+    assetGroup = this.compressedMap.get(assetId.toBase58())!;
+
+    // Evict the cache, force chain reload
+    this.compressedState.delete(assetId.toBase58());
+    this.tree.updateLeaf(changeLog.index, this.hashAssetGroupData(assetGroup));
+  }
+
+  deleteState(assetId: anchor.web3.PublicKey, changeLog: ChangeLogEventV1) {
+    // Not sure if we want to delete this (ie we want a record of things we indexed & then deleted)
+    // so that we never reindex this
+    this.compressedMap.set(assetId.toBase58(), {
+      assetId: anchor.web3.PublicKey.default,
+      authority: anchor.web3.PublicKey.default,
+      pubkeys: [],
+      data: Buffer.from([]),
+    });
+    this.compressedState.set(assetId.toBase58(), {});
+    this.tree.updateLeaf(changeLog.index, emptyNode(0));
   }
 
   getAssetId(index: number) {
