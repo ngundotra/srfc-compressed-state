@@ -197,15 +197,17 @@ export class CompressedStateIndexer {
   }
 
   handleCpiEvent(event: anchor.Event, changeLog: ChangeLogEventV1) {
-    if (event.name == "CrudCreate") {
+    if (event.name == "CudCreate") {
       let assetGroup = event.data as AssetGroup;
       this.createNewState(changeLog.index, assetGroup);
-    } else if (event.name === "CrudUpdateBytes") {
+    } else if (event.name === "CudUpdate") {
       let assetId = event.data.assetId as anchor.web3.PublicKey;
+      let authority = event.data.authority as anchor.web3.PublicKey;
+      let pubkeys = event.data.pubkeys as anchor.web3.PublicKey[];
       let newData = event.data.data as Buffer;
 
-      this.updateState(assetId, newData, changeLog);
-    } else if (event.name === "CrudDelete") {
+      this.updateState(assetId, authority, pubkeys, newData, changeLog);
+    } else if (event.name === "CudDelete") {
       let assetId = event.data.assetId as anchor.web3.PublicKey;
       this.deleteState(assetId, changeLog);
     } else {
@@ -228,17 +230,18 @@ export class CompressedStateIndexer {
 
   updateState(
     assetId: anchor.web3.PublicKey,
+    authority: anchor.web3.PublicKey,
+    pubkeys: anchor.web3.PublicKey[],
     newData: Buffer,
     changeLog: ChangeLogEventV1
   ) {
-    let assetGroup = this.compressedMap.get(assetId.toBase58())!;
     this.compressedMap.set(assetId.toBase58(), {
-      assetId: assetGroup.assetId,
-      authority: assetGroup.authority,
-      pubkeys: assetGroup.pubkeys,
+      assetId: assetId,
+      authority,
+      pubkeys,
       data: newData,
     });
-    assetGroup = this.compressedMap.get(assetId.toBase58())!;
+    let assetGroup = this.compressedMap.get(assetId.toBase58())!;
 
     // Evict the cache, force chain reload
     this.compressedState.delete(assetId.toBase58());

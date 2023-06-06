@@ -53,9 +53,6 @@ fn replace_state(
         },
         authority_pda_signer,
     );
-    // let previous_leaf: [u8; 32] =
-    //     anchor_lang::solana_program::keccak::hashv(&[&previous_bytes]).to_bytes();
-    // let new_leaf: [u8; 32] = anchor_lang::solana_program::keccak::hashv(&[&new_bytes]).to_bytes();
     spl_account_compression::cpi::replace_leaf(
         cpi_ctx,
         root.to_bytes(),
@@ -116,7 +113,7 @@ pub mod compressed_state {
         };
 
         emit_cpi!({
-            CrudCreate {
+            CudCreate {
                 authority: ctx.accounts.owner.key.clone(),
                 asset_id: asset_id,
                 pubkeys: vec![],
@@ -140,7 +137,7 @@ pub mod compressed_state {
         }
 
         emit_cpi!({
-            CrudDelete {
+            CudDelete {
                 asset_id: state.asset_id,
             }
         });
@@ -167,8 +164,10 @@ pub mod compressed_state {
         msg!("Rmp: {}", rmp_index);
 
         emit_cpi!({
-            CrudUpdateBytes {
+            CudUpdate {
                 asset_id: old_state.asset_id,
+                authority: ctx.accounts.owner.key.clone(),
+                pubkeys: vec![],
                 data: emittable_bytes(&new_state)?,
             }
         });
@@ -269,7 +268,7 @@ pub struct State {
 }
 
 #[event]
-pub struct CrudCreate {
+pub struct CudCreate {
     pub authority: Pubkey,
     pub asset_id: Pubkey,
     pub pubkeys: Vec<Pubkey>,
@@ -277,12 +276,14 @@ pub struct CrudCreate {
 }
 
 #[event]
-pub struct CrudUpdateBytes {
+pub struct CudUpdate {
     pub asset_id: Pubkey,
+    pub authority: Pubkey,
+    pub pubkeys: Vec<Pubkey>,
     pub data: Vec<u8>,
 }
 
 #[event]
-pub struct CrudDelete {
+pub struct CudDelete {
     pub asset_id: Pubkey,
 }

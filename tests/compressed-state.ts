@@ -7,19 +7,9 @@ import {
   SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
   SPL_NOOP_PROGRAM_ID,
   createAllocTreeIx,
-  MerkleTree,
-  ConcurrentMerkleTreeAccount,
 } from "@solana/spl-account-compression";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { CompressedStateIndexer } from "./compressedIndexer";
-
-// function deserializeCrudCreate(
-//   program: anchor.Program<CompressedState>,
-//   event: CrudCreate
-// ): State {
-//   let data = program.coder.accounts.decode("State", event.data);
-//   return data as State;
-// }
 
 describe("compressed-state", () => {
   // Configure the client to use the local cluster.
